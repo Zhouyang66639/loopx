@@ -241,23 +241,14 @@ def test_process_failure_is_not_reported_as_success(tmp_path):
                                            ("unrecognized", "unknown")])
 def test_heartbeat_real_native_process_preserves_content_free_host_failure(tmp_path, monkeypatch, code, expected):
     import benchmark.runtime.worker as worker
-    import benchmark.runtime.sessions as sessions
+    from tests.control_plane.test_benchmark_current_admission import _environment
 
-    env = worker_env(tmp_path)
-    skills = tmp_path / "skills"
-    skills.mkdir()
-    env.update(LOOPX_EXECUTION_MODE="heartbeat", LOOPX_SHARED_SKILLS=str(skills))
+    env, _project, _runtime, _source, _state = _environment(tmp_path, monkeypatch, "sqlite")
     monkeypatch.setattr(worker, "heartbeat_body", lambda *a, **kw: "synthetic work")
-    class Session:
-        session_id = "session-a"
-        def __init__(self, env, execution, receipt):
-            receipt["session"] = {"binding_scope": "agent", "session_id": self.session_id}
-        def observe(self, path):
-            assert path.is_file()
-    monkeypatch.setattr(sessions, "BenchmarkSessionWake", Session)
     event = {"type": "turn.failed", "error": {"code": code, "message": "PRIVATE-SENTINEL"}}
     Path(env["CODEX_BIN"]).write_text(
         f"#!{sys.executable}\nimport json,sys\n"
+        "print(json.dumps({'type':'thread.started','thread_id':'session-a'}))\n"
         f"print(json.dumps({event!r}))\n"
         "sys.stdin.read();sys.exit(1)\n")
     receipt = run_once(env)
@@ -289,25 +280,12 @@ def test_host_retry_session_mismatch_refuses_native_process(tmp_path, monkeypatc
 
 
 @pytest.mark.parametrize("context", ["fresh", "resume"])
-def test_native_heartbeat_retry_uses_real_session_owner(tmp_path, monkeypatch, capsys, context):
-    from tests.control_plane.canonical_authority_fixture import isolate_sqlite_runtime
-    from loopx.cli import main
+def test_native_heartbeat_retry_uses_real_session_owner(tmp_path, monkeypatch, context):
+    from tests.control_plane.test_benchmark_current_admission import _environment
     import benchmark.runtime.worker as worker
 
-    isolate_sqlite_runtime(tmp_path, monkeypatch)
-    monkeypatch.chdir(tmp_path)
-    registry, runtime = tmp_path / "registry.json", tmp_path / "runtime"
-    assert main(["--format", "json", "--registry", str(registry), "--runtime-root", str(runtime),
-                 "bootstrap", "--project", str(tmp_path), "--goal-id", "fixture-goal",
-                 "--objective", "Complete synthetic work.", "--adapter-kind", "read_only_project_map_v0",
-                 "--adapter-status", "connected-read-only", "--write-scope", "**", "--no-global-sync"]) == 0
-    assert json.loads(capsys.readouterr().out)["ok"]
-    env = worker_env(tmp_path)
-    skills = tmp_path / "skills"
-    skills.mkdir()
-    env.update(LOOPX_EXECUTION_MODE="heartbeat", LOOPX_ITERATION_CONTEXT=context,
-               LOOPX_SHARED_SKILLS=str(skills), LOOPX_REGISTRY=str(registry),
-               LOOPX_RUNTIME_ROOT=str(runtime), LOOPX_GOAL_ID="fixture-goal", LOOPX_AGENT_ID="agent")
+    env, _project, _runtime, _source, _state = _environment(tmp_path, monkeypatch, "sqlite")
+    env["LOOPX_ITERATION_CONTEXT"] = context
     monkeypatch.setattr(worker, "heartbeat_body", lambda *a, **kw: "synthetic work")
     arguments = tmp_path / "native-calls.jsonl"
     Path(env["CODEX_BIN"]).write_text(f"#!{sys.executable}\n" + f"""

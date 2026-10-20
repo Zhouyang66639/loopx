@@ -49,8 +49,11 @@ survive worker restart. Each retry rechecks Core admission and passes its exact
 session to the native worker, which refuses a missing/replaced binding before
 model invocation. A retry reads that original binding even when normal wakes
 use fresh context. A confirmed successful response ends the failure streak;
-an exhausted policy remains held. Host state is local transport evidence, not
-Goal/Todo/quota authority or proof of task completion.
+an exhausted policy remains held. Provider hold/backoff is checked before
+recording a new semantic replan attempt; a rejected dispatch cannot consume one.
+An unresolved semantic replan still requires its original settlement recovery,
+even when the provider would otherwise permit a transport retry. Host state is
+local transport evidence, not Goal/Todo/quota authority or proof of completion.
 
 Inspect the existing state file, the original wake's `receipt.json`, and the
 content-free `host_failure_hold` / `host_failure_backoff` liveness output. Use

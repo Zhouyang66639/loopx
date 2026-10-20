@@ -723,7 +723,13 @@ def test_never_guarded_cli_retains_ordinary_command_behavior(tmp_path, state_tex
          "--wake-cmd", wake, "--once"],
         capture_output=True, text=True, timeout=15,
     )
-    assert completed.returncode == 0 and count.read_text() == "called", completed.stderr
+    if state_text == "broken-state":
+        # Current main already rejects damaged ordinary scheduler state. The
+        # optional Host adapter must preserve that independent replan safeguard.
+        assert completed.returncode == 2 and not count.exists(), completed.stderr
+        assert state.read_text() == state_text
+    else:
+        assert completed.returncode == 0 and count.read_text() == "called", completed.stderr
     assert "host_failure_hold" not in completed.stdout
 
 

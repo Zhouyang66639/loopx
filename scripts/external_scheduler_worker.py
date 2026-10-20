@@ -799,6 +799,25 @@ def _run_worker_locked(
                 wake_failure_kind = None
                 wake_failed = False
                 if args.wake_cmd:
+                    environment = None
+                    if host_guard:
+                        from loopx.control_plane.turn_driver.host_failure import host_failure_retry_available
+
+                        if prior and (not getattr(args, "wake_host_failure", False)
+                                      or prior["status"] == "started" or not prior.get("session_id")
+                                      or not host_failure_retry_available(prior["host_failure"])):
+                            kind = _mapping(prior.get("host_failure")).get("kind", "unknown")
+                            _log(f"status=host_failure_hold kind={kind} attempt={prior['attempt']} "
+                                 "next=original_host_recovery goal_complete=false new_wake=false")
+                            return 2
+                        delay = max(0, prior.get("not_before", 0) - clock())
+                        if delay:
+                            _log(f"status=host_failure_backoff seconds={delay:.3f} new_wake=false")
+                            if once:
+                                return 2
+                            sleep(min(delay, 60.0))
+                            retry_after_error = True
+                            break
                     if _read_resolved_replan_attempts(state, payload, args):
                         _save_state(state_path, state)
                     if _pending_replan_attempt(state, payload, args):
@@ -829,25 +848,7 @@ def _run_worker_locked(
                         _save_state(state_path, {**state, "reset_token": decision.reset_token,
                                                 "unchanged_count": unchanged_count})
                     _observe_worker_replan(payload, args, None, None)
-                    environment = None
                     if host_guard:
-                        from loopx.control_plane.turn_driver.host_failure import host_failure_retry_available
-
-                        if prior and (not getattr(args, "wake_host_failure", False)
-                                      or prior["status"] == "started" or not prior.get("session_id")
-                                      or not host_failure_retry_available(prior["host_failure"])):
-                            kind = _mapping(prior.get("host_failure")).get("kind", "unknown")
-                            _log(f"status=host_failure_hold kind={kind} attempt={prior['attempt']} "
-                                 "next=original_host_recovery goal_complete=false new_wake=false")
-                            return 2
-                        delay = max(0, prior.get("not_before", 0) - clock())
-                        if delay:
-                            _log(f"status=host_failure_backoff seconds={delay:.3f} new_wake=false")
-                            if once:
-                                return 2
-                            sleep(min(delay, 60.0))
-                            retry_after_error = True
-                            break
                         # Persist intent separately before either the main
                         # state write or the Host invocation can be interrupted.
                         _save_host_pending(state_path, True)
