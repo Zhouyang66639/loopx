@@ -471,6 +471,17 @@ shape merely because of its size. Optional memory participation now has one
 compact, signed envelope projection; the Codex CLI adapter preserves default-off
 isolation. This does not qualify installed heartbeat/App adoption or model value.
 
+The shared DSH/cloud host conversion now retains verified runtime recall context
+and returns opted-in reflections to the existing outer validator. Previously it
+dropped both despite the signed participation facts. Host guidance reuses the
+Codex CLI wording, and native Turn settlement invokes the existing ingest observer
+for a freshly verified ingest binding on other hosts as well. File/SQLite native
+CLI cases cover off, recall-only, ingest-only, invalidated configuration and
+provider failure; the DSH runner and provider are hermetic. The independent
+reflection attestation and accountable settlement still precede provider writes.
+This qualifies host IO and callback wiring, not live provider/model benefit,
+installed adoption or the three convergence acceptances below.
+
 Bounded planning context now remains inline instead of forcing a full-decision
 read under envelope budget pressure. Its existing owner retains the 3 KiB bound;
 the shared DSH/cloud adapter transports the signed contribution and, for saved

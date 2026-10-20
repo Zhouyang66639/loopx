@@ -329,6 +329,14 @@ R5 短包投影也完整保留已有 CLI 结算计划，包括 effect identity�
 envelope 投影，Codex CLI 保持关闭隔离；这不代表安装态 heartbeat/App 或模型收益
 已验收。
 
+共享 DSH/cloud host 转换现在保留已核验的运行时 recall 上下文，并把已开启 ingest
+时返回的反思交给既有外层 validator；此前虽有签名参与事实，两者仍在转换中丢失。
+宿主指导复用 Codex CLI 原文，其他宿主的新鲜 ingest 绑定也经原生 Turn 结算调用
+既有 observer。File/SQLite 原生 CLI 覆盖关闭、仅 recall、仅 ingest、配置失效和
+provider 失败，DSH runner 与 provider 均为隔离 fixture。独立反思证明与可记账结算
+仍先于 provider 写入。本切片只验证宿主 IO 与 callback 接线，不证明真实 provider／
+模型收益、安装采用或以下三项收敛验收。
+
 有界规划上下文现在保持内联，不再因短包预算压力而强制读取整份决策；既有 owner 的
 3 KiB 限制保留。共享 DSH/cloud adapter 传递签名内容，历史引用同时保留原捕获路由和
 哈希。thin renderer 仅在存在 `agent_context.detail_ref` 时要求能力补读，不能把也用于

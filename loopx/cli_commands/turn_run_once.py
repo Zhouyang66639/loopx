@@ -46,6 +46,7 @@ from ..control_plane.turn_driver import (
     run_loopx_turn_once,
     selected_turn_todo,
 )
+from ..control_plane.turn_driver.executor import reward_memory_automation_enabled
 from ..quota import spend_quota_slot
 from ..state_refresh import refresh_state_run
 from ..control_plane.todos.path_resolution import resolve_todo_state_path
@@ -923,7 +924,8 @@ def execute_turn_run_once(
             scheduler=scheduler if args.execute else None,
             post_settlement=(
                 post_settlement_reward_memory
-                if args.execute and args.host == "codex-cli"
+                if args.execute and (args.host == "codex-cli"
+                    or reward_memory_automation_enabled(payload, operation="automatic_ingest"))
                 else None
             ),
             admit_start=managed_cadence.admit if args.execute else None,

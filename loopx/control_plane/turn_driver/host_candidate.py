@@ -13,6 +13,7 @@ from typing import Any
 
 from ..quota.turn_envelope import turn_envelope_action_signature_document
 from .driver import selected_turn_todo
+from .executor import reward_memory_automation_enabled, reward_memory_prompt_instructions
 
 LOOPX_TURN_HOST_REQUEST_SCHEMA = "loopx_turn_host_request_v0"
 LOOPX_TURN_RESULT_SCHEMA = "loopx_turn_result_v0"
@@ -122,6 +123,14 @@ def extract_turn_authority(request: Mapping[str, Any]) -> dict[str, Any]:
         # binding; this adapter neither reads the file nor re-enters admission.
         authority["detail_ref"] = _mapping(envelope.get("detail_ref"))
         authority["action_signature"] = signature
+    recall_enabled = reward_memory_automation_enabled(request, operation="automatic_recall")
+    ingest_enabled = reward_memory_automation_enabled(request, operation="automatic_ingest")
+    if recall_enabled or ingest_enabled:
+        memory = _mapping(request.get("reward_memory_recall"))
+        if not recall_enabled:
+            memory["context"] = None
+        authority["reward_memory_recall"] = memory
+        authority["reward_memory_instructions"] = reward_memory_prompt_instructions(request)
     return authority
 
 
@@ -342,6 +351,11 @@ def build_result(
             # Preserve the structured executor input verbatim. The executor
             # owns type, size, JSON and semantic validation.
             result[field] = candidate[field]
+    if ("reward_memory_reflection_json" in candidate
+            and reward_memory_automation_enabled(request, operation="automatic_ingest")):
+        # The outer executor validates bounds, material outcome, exact digest
+        # attestation and evidence. This adapter must not silently drop its input.
+        result["reward_memory_reflection_json"] = candidate["reward_memory_reflection_json"]
 
     has_path_delta = "path_delta_mode" in candidate or "agent_vision_json" in candidate
     unchanged_reason = candidate.get("vision_unchanged_reason")

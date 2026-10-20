@@ -3579,11 +3579,17 @@ def test_turn_run_once_cli_uses_built_in_codex_host_and_typed_writeback(
     assert "One%20public%20fixture%20advanced" not in state
 
 
-def test_turn_run_once_codex_cli_wires_validated_reflection_post_settlement(
+@pytest.mark.parametrize("host_kind", ["codex-cli", "dsh"])
+@pytest.mark.parametrize("provider", ["file", "sqlite"])
+def test_turn_run_once_host_wires_validated_reflection_post_settlement(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    host_kind: str,
+    provider: str,
 ) -> None:
-    project, runtime, registry = _write_live_fixture(tmp_path)
+    from tests.control_plane.canonical_authority_fixture import isolate_sqlite_runtime
+    isolate_sqlite_runtime(tmp_path, monkeypatch)
+    project, runtime, registry = _write_live_fixture(tmp_path, provider=provider)
     from tests.control_plane.reward_memory_host_fixture import enable_live_memory
     enable_live_memory(registry)
     reflection = json.dumps(
@@ -3677,6 +3683,17 @@ def test_turn_run_once_codex_cli_wires_validated_reflection_post_settlement(
         ),
         fake_ingest,
     )
+    host_args = ["--host", host_kind]
+    if host_kind == "dsh":
+        runner = tmp_path / "reflection_runner.py"
+        candidate = fake_codex_host({"turn_key": "unused"})
+        runner.write_text(
+            "import json\n"
+            "def run_dsh_turn(**kwargs):\n"
+            f"    return {json.dumps(candidate)!r}\n",
+            encoding="utf-8",
+        )
+        host_args += ["--dsh-runner", str(runner), "--dsh-home", str(tmp_path / "dsh-home")]
     output = io.StringIO()
     with contextlib.redirect_stdout(output):
         exit_code = cli_main(
@@ -3693,8 +3710,7 @@ def test_turn_run_once_codex_cli_wires_validated_reflection_post_settlement(
                 "loopx-turn-fixture",
                 "--agent-id",
                 "codex-fixture",
-                "--host",
-                "codex-cli",
+                *host_args,
                 "--project",
                 str(project),
                 "--validation-command-json",

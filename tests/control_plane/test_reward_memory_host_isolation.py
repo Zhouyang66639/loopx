@@ -14,6 +14,10 @@ import pytest
 from loopx.control_plane.turn_driver import build_loopx_turn_host_request, build_loopx_turn_plan
 from loopx.control_plane.turn_driver.codex_cli import _prompt, codex_cli_result_schema
 from loopx.control_plane.turn_driver.executor import validate_loopx_turn_host_result
+from loopx.control_plane.quota.turn_envelope import turn_envelope_action_signature_document
+from loopx.control_plane.turn_driver.host_candidate import (
+    _canonical_hash, build_result, extract_turn_authority, render_prompt,
+)
 from test_loopx_turn_driver import _envelope
 
 
@@ -120,9 +124,56 @@ def test_old_host_reflection_is_ignored_when_ingest_is_off(ingest: bool) -> None
     assert ("reward_memory_reflection_json" in validated["result"]) is ingest
 
 
+@pytest.mark.parametrize(("recall", "ingest"), [(False, False), (True, False), (False, True), (True, True)])
+@pytest.mark.parametrize("invalidated", [None, "enabled", "available", "configured_for_agent", "goal_id", "agent_id"])
+def test_shared_host_memory_keeps_binding_context_and_validation(recall, ingest, invalidated):
+    plan = _plan(recall=recall, ingest=ingest)
+    envelope = plan["turn_envelope"]
+    envelope["action"]["primary_action"] = "Advance one public fixture"
+    digest = _canonical_hash(turn_envelope_action_signature_document(envelope))
+    envelope["action_signature"].update(source_hash=digest, envelope_hash=digest)
+    if invalidated:
+        plan["reward_memory_recall"]["experiment"][invalidated] = "other" if invalidated.endswith("_id") else False
+    request = build_loopx_turn_host_request(plan)
+    before = copy.deepcopy(request)
+    authority = extract_turn_authority(request)
+    prompt = render_prompt(authority)
+    active = invalidated is None
+    assert ("When reward_memory_recall contains guidance" in prompt) is (active and recall)
+    assert ("Set reward_memory_reflection_json" in prompt) is (active and ingest)
+    if active and recall:
+        assert authority["reward_memory_recall"]["context"] == plan["reward_memory_recall"]["context"]
+    elif "reward_memory_recall" in authority:
+        assert authority["reward_memory_recall"]["context"] is None
+    if not active or not (recall or ingest):
+        ordinary = {k: v for k, v in request.items() if k != "reward_memory_recall"}
+        assert authority == extract_turn_authority(ordinary)
+        assert prompt == render_prompt(extract_turn_authority(ordinary))
+    candidate = {"result_kind": "validated_progress", "next_action": "Continue the fixture",
+        "reward_memory_reflection_json": '{"status":"no_evidence"}'}
+    result = build_result(request, candidate)
+    assert ("reward_memory_reflection_json" in result) is (active and ingest)
+    assert validate_loopx_turn_host_result(plan, result)["ok"]
+    if active and ingest:
+        # Preserve the input for the owning validators, without coercion or
+        # truncation in this adapter. Oversize and stop-result rules still hold.
+        candidate["reward_memory_reflection_json"] = {"wrong": "type"}
+        assert build_result(request, candidate)["reward_memory_reflection_json"] == {"wrong": "type"}
+        candidate["reward_memory_reflection_json"] = "x" * 2401
+        assert not validate_loopx_turn_host_result(plan, build_result(request, candidate))["ok"]
+        candidate.update(result_kind="wait", reward_memory_reflection_json='{"status":"no_evidence"}')
+        assert not validate_loopx_turn_host_result(plan, build_result(request, candidate))["ok"]
+    invalid = copy.deepcopy(request)
+    invalid["turn_envelope"]["boundary"]["capabilities"]["reward_memory"]["automatic_ingest"] = not ingest
+    with pytest.raises(ValueError, match="signature"):
+        extract_turn_authority(invalid)
+    assert request == before
+
+
 @pytest.mark.parametrize("provider", ["file", "sqlite"])
-@pytest.mark.parametrize("mode", ["unconfigured", "disabled", "stale", "both_off", "recall_only", "ingest_only", "both_on"])
-def test_real_turn_cli_memory_projection_and_settlement(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, provider: str, mode: str) -> None:
+@pytest.mark.parametrize("host_kind", ["codex-cli", "dsh"])
+@pytest.mark.parametrize("mode", ["unconfigured", "disabled", "stale", "both_off", "recall_only", "recall_context", "ingest_only", "both_on"])
+def test_real_turn_cli_memory_projection_and_settlement(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, provider: str, host_kind: str, mode: str) -> None:
     from loopx.cli import main
     from tests.control_plane.canonical_authority_fixture import isolate_sqlite_runtime
     from tests.control_plane.reward_memory_host_fixture import enable_live_memory
@@ -132,13 +183,24 @@ def test_real_turn_cli_memory_projection_and_settlement(tmp_path: Path, monkeypa
     project, runtime, registry = _write_live_fixture(tmp_path, provider=provider)
     ingest = mode in {"ingest_only", "both_on"}
     if mode != "unconfigured":
-        config = enable_live_memory(registry, recall=mode in {"recall_only", "both_on"}, ingest=ingest)
+        config = enable_live_memory(registry, recall=mode in {"recall_only", "recall_context", "both_on"}, ingest=ingest)
         if mode == "disabled":
             data = json.loads(registry.read_text())
             data["goals"][0]["control_plane"]["reward_memory"]["enabled"] = False
             registry.write_text(json.dumps(data))
         elif mode == "stale":
             config.write_text(config.read_text() + "\n")
+    if mode == "recall_context":
+        from loopx.capabilities.agent_turn_recall.runtime import run_configured_agent_turn_recall_fail_open
+        from loopx.capabilities.reward_memory.experiment import resolve_reward_memory_experiment
+        from tests.capabilities.test_agent_turn_recall import RecallProvider, active_record
+        _, binding = resolve_reward_memory_experiment(
+            registry_path=registry, goal_id="loopx-turn-fixture", agent_id="codex-fixture")
+        provider_fixture = RecallProvider(active_record(binding, expires_at="2099-01-01T00:00:00+00:00"))
+        # Only provider IO is hermetic; native config, binding, recall receipt,
+        # admission, host, validator and canonical settlement still execute.
+        monkeypatch.setattr("loopx.capabilities.agent_turn_recall.run_configured_agent_turn_recall_fail_open",
+            lambda **kwargs: run_configured_agent_turn_recall_fail_open(**kwargs, provider=provider_fixture))
     capture = tmp_path / "host-capture.json"
     host = tmp_path / "fixture-codex"
     host.write_text(f"#!{sys.executable}\n" + '''import json, os, pathlib, sys
@@ -160,24 +222,44 @@ pathlib.Path(args[args.index('--output-last-message') + 1]).write_text(json.dump
 print(json.dumps({'type': 'thread.started', 'thread_id': 'fixture-memory-session'}))
 ''', encoding="utf-8")
     host.chmod(0o755)
+    host_args = ["--host", "codex-cli", "--codex-bin", str(host)]
+    if host_kind == "dsh":
+        runner = tmp_path / "fixture_dsh_runner.py"
+        runner.write_text('''import json, os, pathlib
+def run_dsh_turn(*, prompt, **kwargs):
+    authority = json.loads(prompt.split('Turn authority JSON:\\n', 1)[1].split('\\n\\nWhen finished', 1)[0])
+    pathlib.Path(os.environ['FIXTURE_HOST_CAPTURE']).write_text(json.dumps({'prompt': prompt, 'authority': authority}))
+    return json.dumps({'result_kind': 'validated_progress', 'classification': 'fixture_progress',
+        'next_action': 'Run the next bounded fixture', 'path_delta_mode': 'unchanged',
+        'vision_unchanged_reason': 'The original fixture remains open.',
+        'reward_memory_reflection_json': '{"status":"no_evidence"}'})
+''', encoding="utf-8")
+        host_args = ["--host", "dsh", "--dsh-runner", str(runner), "--dsh-home", str(tmp_path / "dsh-home")]
     monkeypatch.setenv("FIXTURE_HOST_CAPTURE", str(capture))
     output = io.StringIO()
     with contextlib.redirect_stdout(output):
         code = main(["--registry", str(registry), "--runtime-root", str(runtime), "--format", "json",
             "turn", "run-once", "--goal-id", "loopx-turn-fixture", "--agent-id", "codex-fixture",
-            "--host", "codex-cli", "--project", str(project), "--codex-bin", str(host),
+            *host_args, "--project", str(project),
             "--iteration-context", "fresh", "--validation-command-json", json.dumps([sys.executable, "-c", "pass"]),
             "--scan-root", str(project), "--no-global-sync", "--execute"])
     result = json.loads(output.getvalue())
     assert code == 0, result
     observed = json.loads(capture.read_text())
-    assert ("reward_memory_reflection_json" in observed["schema"]["properties"]) is ingest
+    if host_kind == "codex-cli":
+        assert ("reward_memory_reflection_json" in observed["schema"]["properties"]) is ingest
     assert ("Set reward_memory_reflection_json" in observed["prompt"]) is ingest
-    assert "When reward_memory_recall contains guidance" not in observed["prompt"]
+    assert ("When reward_memory_recall contains guidance" in observed["prompt"]) is (mode == "recall_context")
+    if mode == "recall_context":
+        memory = observed["request" if host_kind == "codex-cli" else "authority"]["reward_memory_recall"]
+        assert memory["status"] == "applied"
+        assert "integration branch" in memory["context"]["guidance"][0]["content_summary"]
     if mode in {"unconfigured", "disabled", "stale", "both_off"}:
         assert "reward_memory" not in observed["prompt"]
     assert result["effects"]["quota_spent"] is True
-    assert result["post_settlement"]["external_writes_performed"] is False
+    assert result.get("post_settlement", {}).get("external_writes_performed", False) is False
+    if ingest:
+        assert "post_settlement" in result
     journals = list((runtime / "goals/loopx-turn-fixture/turns").glob("*.json"))
     assert len(journals) == 1
     assert ("reward_memory_reflection_json" in json.loads(journals[0].read_text())["host_result"]) is ingest

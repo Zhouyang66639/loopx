@@ -652,6 +652,25 @@ post-settlement ingest retain their existing rules. Provider failure remains
 fail-open. The host adapter is Python IO transport over the existing capability
 resolver and TypeScript envelope owner, not a new enablement policy.
 
+The shared DSH/cloud conversion also preserves the runtime recall packet only
+when the signed participation and fresh Goal/Agent binding permit it. Its local
+`reward_memory_instructions` projection reuses the same Codex CLI clauses;
+ingest-only input omits recalled context. Enabled reflections pass unchanged to
+the outer validator, which retains the existing bounds and material-result rule.
+Native Turn settlement runs the existing ingest observer for verified enabled
+ingest on other hosts too; ordinary validation is still insufficient to write
+memory. Unconfigured, disabled and stale inputs add no memory guidance, result
+field or new observer on those hosts. Codex CLI's existing disabled behavior is
+unchanged. File/SQLite CLI and hermetic host/provider tests qualify this IO
+boundary, not live memory service, model adherence or installed activation.
+
+中文：共享 DSH/cloud 转换只在签名参与事实及新鲜 Goal/Agent 绑定允许时保留运行时
+recall 包；本地指导投影复用 Codex CLI 原条款，仅 ingest 不携带召回内容。已开启的
+反思原样交给外层 validator，原大小和 material 规则保留。其他宿主已核验开启 ingest
+时也调用既有结算后 observer，普通验证仍不能授权写记忆。关闭、未配置或失效时不
+新增指导、反思字段或 observer，Codex CLI 原关闭行为不变。隔离 File/SQLite CLI
+及宿主／provider fixture 仅证明 IO 边界，不代表真实服务、模型采用或安装已生效。
+
 This is a bounded shared-facts step. Heartbeat still has its existing full and
 compact rendering paths; it is not yet the same installed host journey. The
 remaining convergence work is tracked in the existing
