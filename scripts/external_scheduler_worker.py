@@ -56,6 +56,7 @@ from loopx.control_plane.todos.contract import (  # noqa: E402
 SCHEDULER_DETAIL_KEY = "local_scheduler"
 LOCAL_SCHEDULER_STOP_DIRECTIVE = "stop"
 PROCESS_OUTPUT_LIMIT_BYTES = 1_000_000
+HOST_LOCK_OPERATION = "external_worker_host"
 
 
 @dataclass(frozen=True)
@@ -461,6 +462,46 @@ def _worker_goal_observation_digests(args: argparse.Namespace) -> dict[str, str 
     return result
 
 
+def _host_pending_path(state_path: Path) -> Path:
+    return state_path.with_name(f"{state_path.name}.host-attempt")
+
+
+def _host_pending(state_path: Path) -> bool | None:
+    """Independent local IO witness: absent/resolved, pending, or unreadable."""
+    path = _host_pending_path(state_path)
+    if path.is_symlink():
+        return None
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return False
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return None
+    pending = value.get("pending") if isinstance(value, dict) else None
+    return pending if isinstance(pending, bool) else None
+
+
+def _save_host_pending(state_path: Path, pending: bool) -> None:
+    _save_state(_host_pending_path(state_path), {"pending": pending}, durable=True)
+
+
+def _legacy_guarded_state(state_path: Path) -> tuple[bool, bool]:
+    from loopx.file_lock import lock_holder_liveness
+
+    # The predecessor's adapter marker can retain an unknown attempt. PID
+    # liveness never grants dispatch; the current kernel fence is still required.
+    _, holder = lock_holder_liveness(state_path)
+    if holder.get("operation") != HOST_LOCK_OPERATION:
+        return False, False
+    try:
+        if not state_path.exists():
+            return True, True
+        _load_state(state_path, strict=True)
+    except (OSError, ValueError):
+        return True, True
+    return True, False
+
+
 def select_interval(
     decision: TickDecision,
     *,
@@ -626,21 +667,33 @@ def run_worker(
     sleep: Callable[[float], None] = time.sleep,
     clock: Callable[[], float] = time.time,
 ) -> int:
+    opted_in = bool(getattr(args, "wake_host_failure", False))
     state_path = resolve_state_path(args).resolve()
+    pending = _host_pending(state_path)
+    # Read the predecessor's marker before our mutex replaces its metadata.
+    # The marker never grants dispatch; inspect actual state under the lock.
+    legacy_lock, legacy_unreadable = (
+        _legacy_guarded_state(state_path) if not opted_in and pending is False else (False, False)
+    )
+    guarded = opted_in or pending is not False or legacy_unreadable
     try:
         state_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        # Admission, attempt inspection and dispatch share the existing worker
-        # mutex. The provider guard must not nest another lock on this path.
+        # All workers retain main's single-consumer mutex. The provider guard
+        # composes with it instead of nesting a second lock on the same path.
         with try_exclusive_file_lock(state_path, agent_id=normalize_todo_claimed_by(args.agent_id),
-                                     operation="external_scheduler_worker") as lock:
-            if lock is None:
+                                     operation=HOST_LOCK_OPERATION if guarded or legacy_lock
+                                     else "external_scheduler_worker") as held:
+            if held is None:
+                if guarded or legacy_lock:
+                    _log("status=host_failure_hold kind=unknown reason=worker_already_running")
+                    return 2
                 _log("status=already_running next=observe_current_worker")
-                return 2 if getattr(args, "wake_host_failure", False) else 0
-            host_guard = bool(getattr(args, "wake_host_failure", False))
+                return 0
+            host_guard = guarded or _host_pending(state_path) is not False
             if not host_guard:
                 host_guard = "host_attempt" in _load_state(state_path)
-            return _run_worker_locked(args, state_path=state_path, sleep=sleep,
-                                      clock=clock, host_guard=host_guard)
+            return _run_worker_locked(args, state_path=state_path, sleep=sleep, clock=clock,
+                                      host_guard=host_guard, unresolved_state=legacy_unreadable)
     except (OSError, ValueError) as exc:
         reason = "worker state I/O failed; preserve original work" if isinstance(exc, OSError) else str(exc)
         _log(f"status=state_error error={shlex.quote(reason)}")
@@ -654,6 +707,7 @@ def _run_worker_locked(
     sleep: Callable[[float], None],
     clock: Callable[[], float],
     host_guard: bool,
+    unresolved_state: bool = False,
 ) -> int:
     should_run_command = build_should_run_command(args)
     once = bool(args.once)
@@ -661,17 +715,33 @@ def _run_worker_locked(
 
     while True:
         state_unreadable = False
+        pending = _host_pending(state_path) if host_guard else False
         try:
+            if unresolved_state:
+                raise ValueError("legacy Host state is unreadable")
             state = _load_state(state_path, strict=host_guard)
             previous_token = str(state.get("reset_token") or "")
             unchanged_count = int(state.get("unchanged_count") or 0)
             prior = _host_attempt(state, scope) if host_guard else {}
+            # A validated original worker-stop permits readback, never dispatch,
+            # even when the secondary witness is unreadable.
+            if ((pending is None and prior.get("status") != "stopped")
+                    or (pending is True and not prior)):
+                raise ValueError("original Host attempt is unresolved")
         except (ValueError, TypeError, OverflowError):
             if not host_guard:
                 raise
             # Unknown local evidence forbids dispatch, not Core observation.
             state, previous_token, unchanged_count, prior = {}, "", 0, {}
             state_unreadable = True
+
+        if host_guard and pending is False and (prior or state_unreadable):
+            # Retain an older valid attempt, or an opted-in unreadable state,
+            # before a later flag-off restart can lose that evidence.
+            try:
+                _save_host_pending(state_path, True)
+            except OSError:
+                state_unreadable = True
 
         def save(fields: dict[str, Any]) -> None:
             _save_state(state_path, {**state, **fields}, durable=host_guard)
@@ -778,6 +848,9 @@ def _run_worker_locked(
                             sleep(min(delay, 60.0))
                             retry_after_error = True
                             break
+                        # Persist intent separately before either the main
+                        # state write or the Host invocation can be interrupted.
+                        _save_host_pending(state_path, True)
                         state["host_attempt"] = {"scope": scope, "status": "started",
                             "attempt": prior.get("attempt", 0) + 1,
                             "session_id": prior.get("session_id")}
@@ -825,6 +898,10 @@ def _run_worker_locked(
                                      last_wake_status="wake_failed" if wake_failed else "wake_ok",
                                      last_wake_failure_kind=wake_failure_kind)
                         save({})
+                        if failure is None:
+                            # Only confirmed success, after its main-state
+                            # commit, resolves the independent witness.
+                            _save_host_pending(state_path, False)
                     wake_status = "wake_failed" if wake_failed else "wake_ok"
                 _log(
                     f"status=should_run {wake_status} "
