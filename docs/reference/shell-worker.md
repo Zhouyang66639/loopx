@@ -38,7 +38,9 @@ An unrelated ordinary lock does not enable the adapter. This compatibility
 readback never treats PID liveness as permission to dispatch or bypass the lock.
 An explicit resolved witness takes precedence over that older lock record;
 flag-off commands retain ordinary validation of damaged primary state without
-reopening a completed Host attempt.
+reopening a completed Host attempt. State and witness are rechecked after
+acquiring the lock, so a contender cannot revive an earlier observation after
+the original Host has committed success.
 The retained adapter lock also fences its initial Core read before intent is
 written; after confirmed success, flag-off commands keep their ordinary result
 handling under that fence.

@@ -978,3 +978,36 @@ def test_cli_resolved_witness_is_not_reopened_by_legacy_lock(tmp_path, replaceme
     assert json.loads(witness.read_text()) == {"pending": False}
     assert "host_failure_hold" not in second.stdout
     assert host_calls.read_text() == "1"
+
+
+def test_success_committed_before_lock_supersedes_contender_observation(tmp_path, monkeypatch):
+    from contextlib import contextmanager
+
+    args, calls = _guarded_host(tmp_path, recover_at=1)
+    args.once = True
+    monkeypatch.setattr(worker, "run_quota_should_run", lambda *a, **kw: _hint_payload(should_run=True))
+    assert worker.run_worker(args) == 0
+    state = Path(args.state_file)
+    witness = Path(args.state_file + ".host-attempt")
+    completed_state, completed_witness = state.read_text(), witness.read_text()
+    state.unlink()
+    witness.unlink()
+    original_lock = worker.try_exclusive_file_lock
+
+    @contextmanager
+    def completed_before_lock(*a, **kw):
+        # Replay a deterministic process interleaving at the actual fence: the
+        # original Host commits after this contender starts, before it locks.
+        state.write_text(completed_state)
+        witness.write_text(completed_witness)
+        with original_lock(*a, **kw) as held:
+            yield held
+
+    monkeypatch.setattr(worker, "try_exclusive_file_lock", completed_before_lock)
+    args.wake_host_failure = False
+    ordinary = tmp_path / "ordinary-called"
+    args.wake_cmd = shlex.join([sys.executable, "-c",
+        f"from pathlib import Path; Path({str(ordinary)!r}).touch()"])
+    assert worker.run_worker(args) == 0
+    assert ordinary.exists() and calls.read_text() == "1"
+    assert json.loads(witness.read_text()) == {"pending": False}

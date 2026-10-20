@@ -485,21 +485,13 @@ def _save_host_pending(state_path: Path, pending: bool) -> None:
     _save_state(_host_pending_path(state_path), {"pending": pending}, durable=True)
 
 
-def _legacy_guarded_state(state_path: Path) -> tuple[bool, bool]:
+def _legacy_host_lock(state_path: Path) -> bool:
     from loopx.file_lock import lock_holder_liveness
 
-    # The predecessor's adapter marker can retain an unknown attempt. PID
-    # liveness never grants dispatch; the current kernel fence is still required.
+    # Capture only compatibility metadata before our mutex replaces it. PID
+    # liveness never grants dispatch; read primary state under the current lock.
     _, holder = lock_holder_liveness(state_path)
-    if holder.get("operation") != HOST_LOCK_OPERATION:
-        return False, False
-    try:
-        if not state_path.exists():
-            return True, True
-        _load_state(state_path, strict=True)
-    except (OSError, ValueError):
-        return True, True
-    return True, False
+    return holder.get("operation") == HOST_LOCK_OPERATION
 
 
 def select_interval(
@@ -673,12 +665,12 @@ def run_worker(
     # Read the predecessor's marker before our mutex replaces its metadata.
     # An explicit resolved witness supersedes that older compatibility evidence.
     # The marker never grants dispatch; inspect actual state under the lock.
-    legacy_lock, legacy_unreadable = (
-        _legacy_guarded_state(state_path)
+    legacy_lock = (
+        _legacy_host_lock(state_path)
         if not opted_in and pending is False and not _host_pending_path(state_path).exists()
-        else (False, False)
+        else False
     )
-    guarded = opted_in or pending is not False or legacy_unreadable
+    guarded = opted_in or pending is not False or legacy_lock
     try:
         state_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         # All workers retain main's single-consumer mutex. The provider guard
@@ -692,7 +684,16 @@ def run_worker(
                     return 2
                 _log("status=already_running next=observe_current_worker")
                 return 0
-            host_guard = guarded or _host_pending(state_path) is not False
+            pending = _host_pending(state_path)
+            host_guard = opted_in or pending is not False
+            legacy_unreadable = False
+            if legacy_lock and pending is False and not _host_pending_path(state_path).exists():
+                try:
+                    legacy_unreadable = not state_path.exists()
+                    _load_state(state_path)
+                except (OSError, ValueError):
+                    legacy_unreadable = True
+                host_guard = host_guard or legacy_unreadable
             if not host_guard:
                 host_guard = "host_attempt" in _load_state(state_path)
             return _run_worker_locked(args, state_path=state_path, sleep=sleep, clock=clock,
