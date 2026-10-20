@@ -36,6 +36,9 @@ For a predecessor without the witness, the matching Host-adapter lock record
 also retains the guarded route when its primary state is unreadable or missing.
 An unrelated ordinary lock does not enable the adapter. This compatibility
 readback never treats PID liveness as permission to dispatch or bypass the lock.
+An explicit resolved witness takes precedence over that older lock record;
+flag-off commands retain ordinary validation of damaged primary state without
+reopening a completed Host attempt.
 The retained adapter lock also fences its initial Core read before intent is
 written; after confirmed success, flag-off commands keep their ordinary result
 handling under that fence.

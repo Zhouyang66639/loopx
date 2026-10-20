@@ -671,9 +671,12 @@ def run_worker(
     state_path = resolve_state_path(args).resolve()
     pending = _host_pending(state_path)
     # Read the predecessor's marker before our mutex replaces its metadata.
+    # An explicit resolved witness supersedes that older compatibility evidence.
     # The marker never grants dispatch; inspect actual state under the lock.
     legacy_lock, legacy_unreadable = (
-        _legacy_guarded_state(state_path) if not opted_in and pending is False else (False, False)
+        _legacy_guarded_state(state_path)
+        if not opted_in and pending is False and not _host_pending_path(state_path).exists()
+        else (False, False)
     )
     guarded = opted_in or pending is not False or legacy_unreadable
     try:

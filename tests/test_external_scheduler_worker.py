@@ -945,3 +945,36 @@ def test_explicit_host_stop_is_readable_on_restart_without_new_dispatch(tmp_path
     args.wake_stop_exit_code = None
     assert worker.run_worker(args) == 2
     assert calls == [True]
+
+
+@pytest.mark.parametrize("replacement", [None, "broken-state"])
+def test_cli_resolved_witness_is_not_reopened_by_legacy_lock(tmp_path, replacement):
+    args, host_calls = _guarded_host(tmp_path, recover_at=1)
+    cli = Path(args.cli_bin)
+    _write_executable(cli, f"#!{sys.executable}\nprint({json.dumps(_hint_payload(should_run=True))!r})\n")
+    command = [sys.executable, str(SCRIPTS / "external_scheduler_worker.py"),
+               "--cli-bin", args.cli_bin, "--registry", args.registry,
+               "--goal-id", args.goal_id, "--agent-id", args.agent_id,
+               "--state-file", args.state_file, "--once"]
+    first = subprocess.run([*command, "--wake-cmd", args.wake_cmd, "--wake-host-failure"],
+                           capture_output=True, text=True, timeout=15)
+    assert first.returncode == 0 and host_calls.read_text() == "1", first.stderr
+    witness = Path(args.state_file + ".host-attempt")
+    assert json.loads(witness.read_text()) == {"pending": False}
+    state = Path(args.state_file)
+    if replacement is None:
+        state.unlink()
+    else:
+        state.write_text(replacement)
+    ordinary_calls = tmp_path / "ordinary-called"
+    ordinary = shlex.join([sys.executable, "-c",
+        f"from pathlib import Path; Path({str(ordinary_calls)!r}).touch(); print('opaque result')"])
+    second = subprocess.run([*command, "--wake-cmd", ordinary],
+                            capture_output=True, text=True, timeout=15)
+    # Current main rejects damaged ordinary scheduler state, but a missing file
+    # permits an ordinary command. Neither case can reopen a resolved Host.
+    assert second.returncode == (0 if replacement is None else 2), second.stderr
+    assert ordinary_calls.exists() is (replacement is None)
+    assert json.loads(witness.read_text()) == {"pending": False}
+    assert "host_failure_hold" not in second.stdout
+    assert host_calls.read_text() == "1"
